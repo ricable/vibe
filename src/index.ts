@@ -6,6 +6,11 @@
  * @module ran-network-analysis
  */
 
+// Internal imports for local use
+import { RANAnalysisOrchestrator as RANOrchestrator } from './agents/orchestrator.js';
+import type { AnalysisResult, AnalysisRequest } from './agents/orchestrator.js';
+import type { CellKPISnapshot, KPITimeSeries, NeighborRelation } from './models/ran-kpi.js';
+
 // Models
 export * from './models/ran-kpi.js';
 
@@ -18,6 +23,7 @@ export { default as rootCauseAnalysis } from './analysis/root-cause.js';
 // GNN modules
 export { default as cellGraph } from './gnn/cell-graph.js';
 export { default as uplinkPowerControl } from './gnn/uplink-power-control.js';
+export { default as interferenceOptimizer } from './gnn/interference-optimizer.js';
 
 // Agent orchestration
 export { default as orchestrator } from './agents/orchestrator.js';
@@ -66,6 +72,19 @@ export {
 } from './gnn/uplink-power-control.js';
 
 export {
+  SINRPredictionGNN,
+  IssueCellDetector,
+  GeneticOptimizer,
+  InterferenceOptimizationLoop,
+  DEFAULT_OPTIMIZER_CONFIG,
+} from './gnn/interference-optimizer.js';
+export type {
+  InterferenceOptimizerConfig,
+  IssueCell,
+  NetworkOptimizationResult,
+} from './gnn/interference-optimizer.js';
+
+export {
   RANAnalysisOrchestrator,
   AnalysisReportGenerator,
 } from './agents/orchestrator.js';
@@ -74,13 +93,13 @@ export {
  * Quick start function for running analysis
  */
 export async function analyzeNetwork(options: {
-  cellSnapshots: Map<string, import('./models/ran-kpi.js').CellKPISnapshot>;
-  timeSeriesData: Map<string, import('./models/ran-kpi.js').KPITimeSeries[]>;
-  neighborRelations: import('./models/ran-kpi.js').NeighborRelation[];
-}): Promise<import('./agents/orchestrator.js').AnalysisResult> {
-  const orchestrator = new RANAnalysisOrchestrator();
+  cellSnapshots: Map<string, CellKPISnapshot>;
+  timeSeriesData: Map<string, KPITimeSeries[]>;
+  neighborRelations: NeighborRelation[];
+}): Promise<AnalysisResult> {
+  const analysisOrchestrator = new RANOrchestrator();
 
-  return orchestrator.analyze({
+  return analysisOrchestrator.analyze({
     ...options,
     analysisScope: {
       detectAnomalies: true,
