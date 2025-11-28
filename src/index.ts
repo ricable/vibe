@@ -24,6 +24,7 @@ export { default as rootCauseAnalysis } from './analysis/root-cause.js';
 export { default as cellGraph } from './gnn/cell-graph.js';
 export { default as uplinkPowerControl } from './gnn/uplink-power-control.js';
 export { default as interferenceOptimizer } from './gnn/interference-optimizer.js';
+export { default as networkSurrogateModel } from './gnn/network-surrogate-model.js';
 
 // Agent orchestration
 export { default as orchestrator } from './agents/orchestrator.js';
@@ -83,6 +84,25 @@ export type {
   IssueCell,
   NetworkOptimizationResult,
 } from './gnn/interference-optimizer.js';
+
+// Network Surrogate Model (Digital Twin)
+export {
+  SurrogateGraphBuilder,
+  GNNSurrogateModel,
+  IssueCellDetector as SurrogateIssueCellDetector,
+  SurrogateOptimizer,
+  SurrogateVisualizer,
+  DEFAULT_SURROGATE_CONFIG,
+} from './gnn/network-surrogate-model.js';
+export type {
+  SurrogateModelConfig,
+  PowerControlParams,
+  CellStatus,
+  CellOptimizationResult,
+  NetworkOptimizationResult as SurrogateNetworkOptimizationResult,
+  TrainingSample,
+  SurrogateGraph,
+} from './gnn/network-surrogate-model.js';
 
 export {
   RANAnalysisOrchestrator,
