@@ -18,6 +18,9 @@ export { default as rootCauseAnalysis } from './analysis/root-cause.js';
 // GNN modules
 export { default as cellGraph } from './gnn/cell-graph.js';
 export { default as uplinkPowerControl } from './gnn/uplink-power-control.js';
+export { default as sinrPredictor } from './gnn/sinr-predictor.js';
+export { default as bayesianOptimizer } from './gnn/bayesian-optimizer.js';
+export { default as gnnTraining } from './gnn/train.js';
 
 // Agent orchestration
 export { default as orchestrator } from './agents/orchestrator.js';
@@ -66,9 +69,25 @@ export {
 } from './gnn/uplink-power-control.js';
 
 export {
-  RANAnalysisOrchestrator,
-  AnalysisReportGenerator,
-} from './agents/orchestrator.js';
+  GNNSINRPredictor,
+  InterferenceCouplingBuilder,
+} from './gnn/sinr-predictor.js';
+
+export {
+  BayesianGNN,
+  GeneticAlgorithmOptimizer,
+  NetworkPowerControlOptimizer,
+} from './gnn/bayesian-optimizer.js';
+
+export {
+  GNNTrainer,
+  TrainingDataGenerator,
+  DEFAULT_TRAINING_CONFIG,
+} from './gnn/train.js';
+
+import { RANAnalysisOrchestrator as Orchestrator, AnalysisReportGenerator as ReportGenerator } from './agents/orchestrator.js';
+
+export { Orchestrator as RANAnalysisOrchestrator, ReportGenerator as AnalysisReportGenerator };
 
 /**
  * Quick start function for running analysis
@@ -78,7 +97,7 @@ export async function analyzeNetwork(options: {
   timeSeriesData: Map<string, import('./models/ran-kpi.js').KPITimeSeries[]>;
   neighborRelations: import('./models/ran-kpi.js').NeighborRelation[];
 }): Promise<import('./agents/orchestrator.js').AnalysisResult> {
-  const orchestrator = new RANAnalysisOrchestrator();
+  const orchestrator = new Orchestrator();
 
   return orchestrator.analyze({
     ...options,
