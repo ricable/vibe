@@ -1,3 +1,8 @@
+# Node.js
+node_modules/
+dist/
+*.log
+npm-debug.log*
 
 # Claude Flow generated files
 .claude/settings.local.json
