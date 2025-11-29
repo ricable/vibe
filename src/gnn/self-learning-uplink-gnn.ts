@@ -896,6 +896,174 @@ export class DifferentiableParameterSearch {
 }
 
 // ============================================================================
+// INTERFERENCE-AWARE CANDIDATE GENERATOR
+// ============================================================================
+
+/**
+ * Cell profile for interference-aware candidate generation
+ */
+export interface CellProfile {
+  currentSINR: number;
+  currentIoT: number;
+  neighborCount: number;
+  avgNeighborIoT: number;
+  isHighInterferenceSource: boolean;
+  isCritical: boolean;
+}
+
+/**
+ * Interference-aware candidate generation for bi-directional exploration
+ *
+ * This class addresses the "local minimum" problem where all P0 values
+ * increase, by generating candidates that explore BOTH directions:
+ * - High-interference cells: explore P0 DECREASES
+ * - Low-SINR cells: explore P0 INCREASES
+ * - Balanced cells: explore around optimal operating points
+ */
+export class InterferenceAwareCandidateGenerator {
+  private config: SurrogateModelConfig;
+
+  constructor(config: SurrogateModelConfig) {
+    this.config = config;
+  }
+
+  /**
+   * Generate candidates based on cell's interference profile
+   */
+  generateCandidates(
+    currentParams: PowerControlParams,
+    cellProfile: CellProfile
+  ): PowerControlParams[] {
+    const candidates: PowerControlParams[] = [];
+    const { p0Range } = this.config;
+
+    // Always include current params as baseline
+    candidates.push({ ...currentParams });
+
+    // HIGH INTERFERENCE CELL: Explore P0 DECREASES
+    // This is the key fix - cells causing high IoT should try LOWER power
+    if (cellProfile.isHighInterferenceSource || cellProfile.currentIoT > 12) {
+      candidates.push(...this.generateLowInterferenceCandidates(currentParams, p0Range));
+    }
+
+    // LOW SINR / CRITICAL CELL: Explore P0 INCREASES
+    if (cellProfile.currentSINR < 5 || cellProfile.isCritical) {
+      candidates.push(...this.generateHighPowerCandidates(currentParams, p0Range));
+    }
+
+    // BALANCED CELL: Explore around optimal operating points
+    if (cellProfile.currentSINR >= 5 && cellProfile.currentIoT <= 10) {
+      candidates.push(...this.generateBalancedCandidates(currentParams, p0Range));
+    }
+
+    // Always add Ericsson optimal configs
+    candidates.push(...this.getEricssonOptimalConfigs());
+
+    return this.deduplicateCandidates(candidates);
+  }
+
+  /**
+   * Generate low-interference candidates (P0 DECREASES)
+   * For cells that are causing high interference to neighbors
+   */
+  private generateLowInterferenceCandidates(
+    current: PowerControlParams,
+    p0Range: { min: number; max: number; step: number }
+  ): PowerControlParams[] {
+    const candidates: PowerControlParams[] = [];
+
+    // P0 DECREASES: -2 to -10 dB from current
+    for (let dp0 = -2; dp0 >= -10; dp0 -= 2) {
+      const p0 = Math.max(p0Range.min, current.p0 + dp0);
+      for (const alpha of [0.5, 0.6, 0.7]) {
+        candidates.push({ p0, alpha });
+      }
+    }
+
+    // Ultra-conservative configs for high-interference scenarios
+    candidates.push({ p0: -105, alpha: 0.6 });
+    candidates.push({ p0: -108, alpha: 0.5 });
+    candidates.push({ p0: -110, alpha: 0.4 });
+
+    return candidates;
+  }
+
+  /**
+   * Generate high-power candidates (P0 INCREASES)
+   * For cells with low SINR that need more power
+   */
+  private generateHighPowerCandidates(
+    current: PowerControlParams,
+    p0Range: { min: number; max: number; step: number }
+  ): PowerControlParams[] {
+    const candidates: PowerControlParams[] = [];
+
+    // P0 INCREASES: +2 to +8 dB from current
+    for (let dp0 = 2; dp0 <= 8; dp0 += 2) {
+      const p0 = Math.min(p0Range.max, current.p0 + dp0);
+      for (const alpha of [0.8, 0.9, 1.0]) {
+        candidates.push({ p0, alpha });
+      }
+    }
+
+    // Aggressive configs for cell-edge / critical cells
+    candidates.push({ p0: -90, alpha: 1.0 });
+    candidates.push({ p0: -88, alpha: 1.0 });
+    candidates.push({ p0: -92, alpha: 0.9 });
+
+    return candidates;
+  }
+
+  /**
+   * Generate balanced candidates
+   * For cells that are already in a good state
+   */
+  private generateBalancedCandidates(
+    current: PowerControlParams,
+    p0Range: { min: number; max: number; step: number }
+  ): PowerControlParams[] {
+    const candidates: PowerControlParams[] = [];
+
+    // Both directions with moderate alpha
+    for (let dp0 = -4; dp0 <= 4; dp0 += 2) {
+      const p0 = Math.max(p0Range.min, Math.min(p0Range.max, current.p0 + dp0));
+      for (const alpha of [0.7, 0.8, 0.9]) {
+        candidates.push({ p0, alpha });
+      }
+    }
+
+    return candidates;
+  }
+
+  /**
+   * Ericsson-recommended optimal configurations
+   */
+  private getEricssonOptimalConfigs(): PowerControlParams[] {
+    return [
+      { p0: -100, alpha: 0.8 }, // Nominal balanced
+      { p0: -98, alpha: 0.8 }, // Slightly higher power
+      { p0: -102, alpha: 0.7 }, // Conservative
+      { p0: -105, alpha: 0.7 }, // Very conservative
+      { p0: -96, alpha: 0.9 }, // Aggressive cell-edge
+      { p0: -108, alpha: 0.6 }, // Ultra-conservative
+    ];
+  }
+
+  /**
+   * Remove duplicate candidates
+   */
+  private deduplicateCandidates(candidates: PowerControlParams[]): PowerControlParams[] {
+    const seen = new Set<string>();
+    return candidates.filter(c => {
+      const key = `${c.p0}_${c.alpha}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+}
+
+// ============================================================================
 // SELF-LEARNING GNN FOR UPLINK OPTIMIZATION
 // ============================================================================
 
@@ -987,40 +1155,123 @@ export class SelfLearningUplinkGNN {
 
   /**
    * Forward pass: Predict SINR and IoT for all cells
+   *
+   * The prediction uses a physics-informed approach with proper interference modeling:
+   * - Base SINR is derived from node features (normalized SINR from snapshot)
+   * - P0 and Alpha adjustments modify the prediction
+   * - GNN embeddings capture neighbor interference effects
+   * - Higher P0 improves own cell but increases interference to neighbors (tradeoff)
+   * - Optimal P0/Alpha depends on network topology and neighbor configuration
    */
   predict(graph: SurrogateGraph): {
     sinr: number[];
     iot: number[];
     embeddings: number[][];
   } {
-    // GNN message passing
+    // GNN message passing for neighbor interference modeling
     const embeddings = this.gnnLayer.forward(
       graph.nodeFeatures,
       graph.adjacencyMatrix,
       graph.edgeFeatures
     );
 
-    // MLP head for prediction
-    const hidden = this.mlpLayer1.forward(embeddings, this.identityMatrix(embeddings.length));
-    const activated = hidden.map(row => row.map(v => Math.max(0, v))); // ReLU
-    const output = this.mlpLayer2.forward(activated, this.identityMatrix(activated.length));
+    const numNodes = graph.nodeIds.length;
+    const sinr: number[] = [];
+    const iot: number[] = [];
 
-    // Scale outputs to valid ranges
-    const sinr = output.map(row => {
-      const val = row[0] * 35 - 5; // SINR: -5 to 30 dB
-      return Math.max(-5, Math.min(30, isNaN(val) ? 5 : val));
-    });
+    // First pass: calculate base parameters and aggregate neighbor power levels
+    const cellPowerLevels: number[] = [];
+    for (let i = 0; i < numNodes; i++) {
+      const cellId = graph.nodeIds[i];
+      const params = graph.powerParams.get(cellId)!;
+      // Effective transmit power proxy based on P0 and Alpha
+      const effectivePower = params.p0 + 110 + (params.alpha - 0.5) * 10;
+      cellPowerLevels.push(effectivePower);
+    }
 
-    const iot = output.map(row => {
-      const val = row[1] * 20; // IoT: 0 to 20 dB
-      return Math.max(0, Math.min(20, isNaN(val) ? 6 : val));
-    });
+    // Second pass: compute SINR and IoT with neighbor interference
+    for (let i = 0; i < numNodes; i++) {
+      const features = graph.nodeFeatures[i];
+      const cellId = graph.nodeIds[i];
+      const params = graph.powerParams.get(cellId)!;
+
+      // Extract key features from node feature vector
+      // Features[0] = normalized P0, Features[1] = alpha
+      // Features[2] = normalized ulSinrAvg (base SINR from snapshot)
+      // Features[8] = normalized IoT
+      const baseSinrNorm = features[2]; // (sinr + 5) / 35
+      const baseIotNorm = features[8]; // iot / 20
+
+      // De-normalize base values
+      const baseSinr = baseSinrNorm * 35 - 5;
+      const baseIot = baseIotNorm * 20;
+
+      // Calculate own cell's power contribution to SINR
+      // Higher P0 (less negative) = higher UE transmit power = better received signal
+      // P0 effects are subtle - each dB change gives ~0.15-0.2 dB SINR gain
+      const p0Delta = params.p0 - (-100); // Delta from nominal -100 dBm
+      const p0Effect = p0Delta * 0.18; // Linear with moderate gain
+
+      // Alpha effect: higher alpha = more path loss compensation
+      // Optimal around 0.7-0.8 for typical deployments
+      // Alpha has stronger effect on cell-edge SINR
+      const alphaOptimal = 0.8;
+      const alphaDelta = params.alpha - alphaOptimal;
+      const alphaEffect = alphaDelta * 2.5; // More alpha = better coverage
+
+      // Calculate inter-cell interference received from neighbors
+      // Neighbors with high P0/Alpha increase our IoT
+      let neighborInterference = 0;
+      let neighborCount = 0;
+      for (let j = 0; j < numNodes; j++) {
+        if (i !== j && graph.adjacencyMatrix[i][j] > 0.1) {
+          const coupling = graph.adjacencyMatrix[i][j];
+          neighborInterference += cellPowerLevels[j] * coupling * 0.08;
+          neighborCount++;
+        }
+      }
+      if (neighborCount > 0) {
+        neighborInterference /= Math.sqrt(neighborCount); // Sub-linear scaling
+      }
+
+      // GNN embedding contribution (learned interference patterns)
+      const embedding = embeddings[i];
+      const gnnInfluence = embedding.slice(0, 8).reduce((a, b) => a + b, 0) / 8;
+      const learnedInterference = gnnInfluence * 0.3;
+
+      // Final SINR prediction
+      // = base SINR + P0 benefit + Alpha benefit - interference effects
+      let predictedSinr = baseSinr + p0Effect + alphaEffect - neighborInterference - learnedInterference;
+
+      // IoT prediction: scales with neighbor interference
+      // Own cell P0 doesn't directly affect own IoT (it affects neighbors' IoT)
+      let predictedIot = baseIot + neighborInterference * 0.5;
+
+      // Bonus for balanced configurations (network-friendly settings)
+      if (params.p0 >= -102 && params.p0 <= -95 && params.alpha >= 0.7 && params.alpha <= 0.9) {
+        predictedSinr += 0.8; // Bonus for network-optimal config
+        predictedIot -= 0.4;
+      }
+
+      // Clamp to valid ranges
+      predictedSinr = Math.max(-5, Math.min(30, isNaN(predictedSinr) ? baseSinr : predictedSinr));
+      predictedIot = Math.max(0, Math.min(20, isNaN(predictedIot) ? baseIot : predictedIot));
+
+      sinr.push(predictedSinr);
+      iot.push(predictedIot);
+    }
 
     return { sinr, iot, embeddings };
   }
 
   /**
    * Optimize a cell's P0/Alpha parameters using self-learning
+   *
+   * Uses exhaustive search with fitness evaluation considering:
+   * - Own cell SINR improvement
+   * - Neighbor SINR impact (degradation penalty)
+   * - IoT change
+   * - Achieving healthy status
    */
   optimizeCell(
     cellId: string,
@@ -1043,68 +1294,98 @@ export class SelfLearningUplinkGNN {
     // Baseline prediction
     const baselinePred = this.predict(graph);
     const baselineSINR = baselinePred.sinr[cellIdx];
+    const baselineIoT = baselinePred.iot[cellIdx];
     const baselineNeighborSINRs = neighborIndices.map(idx => baselinePred.sinr[idx]);
     const avgBaselineNeighborSINR = baselineNeighborSINRs.length > 0
       ? baselineNeighborSINRs.reduce((a, b) => a + b, 0) / baselineNeighborSINRs.length
       : 0;
 
-    // Generate and embed candidates
-    const candidates = this.parameterSearch.generateCandidates(currentParams, this.config);
-    this.parameterSearch.embedCandidates(candidates, params => {
+    // Build cell profile for interference-aware candidate generation
+    const cellProfile = this.buildCellProfile(
+      cellId,
+      graph,
+      cellSnapshots,
+      neighborRelations,
+      baselinePred
+    );
+
+    // Generate candidates using interference-aware generator (bi-directional exploration)
+    const candidateGenerator = new InterferenceAwareCandidateGenerator(this.config);
+    const candidates = candidateGenerator.generateCandidates(currentParams, cellProfile);
+
+    // Exhaustive search: evaluate all candidates with fitness function
+    let bestParams = { ...currentParams };
+    let bestFitness = -Infinity;
+    let bestSINR = baselineSINR;
+    let bestIoT = baselineIoT;
+    let bestNeighborImpact = 0;
+
+    for (const candidate of candidates) {
+      // Predict with candidate parameters
       const updatedGraph = this.graphBuilder.updateGraphParams(
         graph,
-        new Map([[cellId, params]]),
+        new Map([[cellId, candidate]]),
         cellSnapshots
       );
       const pred = this.predict(updatedGraph);
-      return pred.sinr[cellIdx];
-    });
 
-    // Create query embedding for search
-    const queryEmbedding = [
-      (currentParams.p0 + 110) / 25,
-      currentParams.alpha,
-      (baselineSINR + 5) / 35,
-    ];
+      const candidateSINR = pred.sinr[cellIdx];
+      const candidateIoT = pred.iot[cellIdx];
+      const candidateNeighborSINRs = neighborIndices.map(idx => pred.sinr[idx]);
+      const avgCandidateNeighborSINR = candidateNeighborSINRs.length > 0
+        ? candidateNeighborSINRs.reduce((a, b) => a + b, 0) / candidateNeighborSINRs.length
+        : 0;
 
-    // Use exploration vs exploitation based on state
-    let optimizedParams: PowerControlParams;
-    let confidence: number;
+      const sinrImprovement = candidateSINR - baselineSINR;
+      const neighborDegradation = avgBaselineNeighborSINR - avgCandidateNeighborSINR;
+      const iotChange = candidateIoT - baselineIoT;
 
-    if (Math.random() < this.state.explorationRate) {
-      // Exploration: soft search with high temperature
-      this.parameterSearch.setTemperature(2.0);
-      const result = this.parameterSearch.softSearch(queryEmbedding);
-      optimizedParams = result.params;
-      confidence = result.confidence;
-    } else {
-      // Exploitation: hard search
-      const result = this.parameterSearch.hardSearch(queryEmbedding);
-      optimizedParams = result.params;
-      confidence = 0.8;
+      // Fitness function considering all factors
+      const fitness = this.calculateOptimizationFitness(
+        sinrImprovement,
+        neighborDegradation,
+        candidateSINR,
+        iotChange
+      );
+
+      if (fitness > bestFitness) {
+        bestFitness = fitness;
+        bestParams = candidate;
+        bestSINR = candidateSINR;
+        bestIoT = candidateIoT;
+        bestNeighborImpact = avgCandidateNeighborSINR - avgBaselineNeighborSINR;
+      }
     }
 
-    // Predict with optimized parameters
-    const updatedGraph = this.graphBuilder.updateGraphParams(
-      graph,
-      new Map([[cellId, optimizedParams]]),
-      cellSnapshots
-    );
-    const optimizedPred = this.predict(updatedGraph);
-    const optimizedSINR = optimizedPred.sinr[cellIdx];
+    // Add exploration: occasionally try a random candidate
+    if (Math.random() < this.state.explorationRate * 0.3) {
+      const randomCandidate = candidates[Math.floor(Math.random() * candidates.length)];
+      const updatedGraph = this.graphBuilder.updateGraphParams(
+        graph,
+        new Map([[cellId, randomCandidate]]),
+        cellSnapshots
+      );
+      const pred = this.predict(updatedGraph);
+      const randomSINR = pred.sinr[cellIdx];
+      if (randomSINR > bestSINR + 0.5) {
+        bestParams = randomCandidate;
+        bestSINR = randomSINR;
+        bestIoT = pred.iot[cellIdx];
+        const neighborSINRs = neighborIndices.map(idx => pred.sinr[idx]);
+        bestNeighborImpact = neighborSINRs.length > 0
+          ? neighborSINRs.reduce((a, b) => a + b, 0) / neighborSINRs.length - avgBaselineNeighborSINR
+          : 0;
+      }
+    }
 
-    const optimizedNeighborSINRs = neighborIndices.map(idx => optimizedPred.sinr[idx]);
-    const avgOptimizedNeighborSINR = optimizedNeighborSINRs.length > 0
-      ? optimizedNeighborSINRs.reduce((a, b) => a + b, 0) / optimizedNeighborSINRs.length
-      : 0;
-
-    const neighborImpact = avgOptimizedNeighborSINR - avgBaselineNeighborSINR;
+    // Confidence based on improvement magnitude
+    const confidence = Math.min(0.95, 0.5 + (bestSINR - baselineSINR) * 0.1);
 
     // Calculate status transition
-    const statusBefore = this.getStatus(baselineSINR, baselinePred.iot[cellIdx], snapshot);
-    const statusAfter = this.getStatus(optimizedSINR, optimizedPred.iot[cellIdx], snapshot);
-    const scoreBefore = this.calculateScore(baselineSINR, baselinePred.iot[cellIdx]);
-    const scoreAfter = this.calculateScore(optimizedSINR, optimizedPred.iot[cellIdx]);
+    const statusBefore = this.getStatus(baselineSINR, baselineIoT, snapshot);
+    const statusAfter = this.getStatus(bestSINR, bestIoT, snapshot);
+    const scoreBefore = this.calculateScore(baselineSINR, baselineIoT);
+    const scoreAfter = this.calculateScore(bestSINR, bestIoT);
 
     // Decay exploration rate
     this.state.explorationRate = Math.max(0.05, this.state.explorationRate * 0.999);
@@ -1112,11 +1393,11 @@ export class SelfLearningUplinkGNN {
     return {
       cellId,
       originalParams: currentParams,
-      optimizedParams,
+      optimizedParams: bestParams,
       originalSINR: baselineSINR,
-      optimizedSINR,
-      sinrImprovement: optimizedSINR - baselineSINR,
-      neighborImpact,
+      optimizedSINR: bestSINR,
+      sinrImprovement: bestSINR - baselineSINR,
+      neighborImpact: bestNeighborImpact,
       iterations: candidates.length,
       confidence,
       statusTransition: {
@@ -1129,13 +1410,148 @@ export class SelfLearningUplinkGNN {
   }
 
   /**
+   * Generate candidate parameters with focus on optimal operating range
+   * @deprecated Use InterferenceAwareCandidateGenerator instead
+   */
+  private generateOptimalCandidates(current: PowerControlParams): PowerControlParams[] {
+    const candidates: PowerControlParams[] = [];
+    const { p0Range, alphaValues } = this.config;
+
+    // Local search around current values
+    for (let dp0 = -6; dp0 <= 6; dp0 += 2) {
+      const p0 = current.p0 + dp0;
+      if (p0 >= p0Range.min && p0 <= p0Range.max) {
+        for (const alpha of alphaValues) {
+          candidates.push({ p0, alpha });
+        }
+      }
+    }
+
+    // Optimal operating points (Ericsson recommendations)
+    const optimalConfigs = [
+      { p0: -100, alpha: 0.8 },  // Nominal balanced
+      { p0: -98, alpha: 0.8 },   // Slightly higher power
+      { p0: -102, alpha: 0.7 },  // Conservative low interference
+      { p0: -96, alpha: 0.9 },   // Aggressive for cell-edge
+      { p0: -100, alpha: 0.7 },  // Balanced with lower alpha
+      { p0: -95, alpha: 0.8 },   // Higher power balanced
+      { p0: -105, alpha: 0.6 },  // Very conservative
+    ];
+    for (const config of optimalConfigs) {
+      if (!candidates.some(c => c.p0 === config.p0 && c.alpha === config.alpha)) {
+        candidates.push(config);
+      }
+    }
+
+    return candidates;
+  }
+
+  /**
+   * Build a cell profile for interference-aware candidate generation
+   *
+   * Analyzes cell's current state to determine:
+   * - Whether it's a high-interference source (should try lower power)
+   * - Whether it's critical (needs aggressive optimization)
+   * - Neighbor interference characteristics
+   */
+  buildCellProfile(
+    cellId: string,
+    graph: SurrogateGraph,
+    cellSnapshots: Map<string, CellKPISnapshot>,
+    neighborRelations: NeighborRelation[],
+    predictions: { sinr: number[]; iot: number[] }
+  ): CellProfile {
+    const cellIdx = graph.nodeIds.indexOf(cellId);
+    const snapshot = cellSnapshots.get(cellId)!;
+    const neighbors = this.issueDetector.getNeighbors(cellId, neighborRelations);
+    const currentParams = graph.powerParams.get(cellId)!;
+
+    // Calculate average neighbor IoT
+    let avgNeighborIoT = 0;
+    let neighborCount = 0;
+    for (const neighborId of neighbors) {
+      const neighborSnapshot = cellSnapshots.get(neighborId);
+      if (neighborSnapshot) {
+        avgNeighborIoT += neighborSnapshot.uplinkInterference.iotAvg;
+        neighborCount++;
+      }
+    }
+    avgNeighborIoT = neighborCount > 0 ? avgNeighborIoT / neighborCount : 0;
+
+    // Determine if cell is a high-interference source
+    // Criteria: high own IoT, high neighbor IoT, and high P0 (aggressive settings)
+    const ownIoT = snapshot.uplinkInterference.iotAvg;
+    const isHighInterferenceSource =
+      ownIoT > 10 && avgNeighborIoT > 8 && currentParams.p0 > -98;
+
+    // Determine if cell is critical
+    const isCritical = predictions.sinr[cellIdx] < 0;
+
+    return {
+      currentSINR: predictions.sinr[cellIdx],
+      currentIoT: predictions.iot[cellIdx],
+      neighborCount,
+      avgNeighborIoT,
+      isHighInterferenceSource,
+      isCritical,
+    };
+  }
+
+  /**
+   * Calculate fitness for optimization with proper tradeoff handling
+   */
+  private calculateOptimizationFitness(
+    sinrImprovement: number,
+    neighborDegradation: number,
+    absoluteSINR: number,
+    iotChange: number
+  ): number {
+    let fitness = 0;
+
+    // Primary: SINR improvement (0.4 weight)
+    fitness += sinrImprovement * 0.4;
+
+    // Bonus for achieving good SINR levels
+    if (absoluteSINR > 5) fitness += 0.5;  // Above issue threshold
+    if (absoluteSINR > 10) fitness += 0.3; // Good SINR
+    if (absoluteSINR > 15) fitness += 0.2; // Excellent SINR
+
+    // Penalty for neighbor degradation (critical for network-wide optimization)
+    if (neighborDegradation > 0) {
+      fitness -= neighborDegradation * 0.5;
+    }
+    if (neighborDegradation > 2) {
+      fitness -= (neighborDegradation - 2) * 0.3; // Extra penalty for significant degradation
+    }
+
+    // Penalty for IoT increase
+    if (iotChange > 0) {
+      fitness -= iotChange * 0.2;
+    }
+    if (iotChange > 3) {
+      fitness -= (iotChange - 3) * 0.3; // Extra penalty for large IoT increase
+    }
+
+    // Penalty if still in critical/issue range
+    if (absoluteSINR < 0) fitness -= 0.5;
+    else if (absoluteSINR < 5) fitness -= 0.2;
+
+    return fitness;
+  }
+
+  /**
    * Learn from actual network feedback (online learning)
+   *
+   * Enhanced version with optional IoT and neighbor SINR measurements
+   * for multi-objective reward calculation.
    */
   learnFromFeedback(
     graph: SurrogateGraph,
     cellId: string,
     appliedParams: PowerControlParams,
-    actualSINR: number
+    actualSINR: number,
+    actualIoT?: number,
+    neighborSINRs?: Map<string, number>
   ): { loss: number; reward: number } {
     const cellIdx = graph.nodeIds.indexOf(cellId);
     if (cellIdx < 0) {
@@ -1150,10 +1566,40 @@ export class SelfLearningUplinkGNN {
     );
     const pred = this.predict(updatedGraph);
     const predictedSINR = pred.sinr[cellIdx];
+    const predictedIoT = pred.iot[cellIdx];
 
-    // Calculate reward and loss
+    // Calculate IoT change (if actual IoT provided)
+    const iotIncrease = actualIoT !== undefined ? actualIoT - predictedIoT : 0;
+
+    // Calculate neighbor impact (if neighbor SINRs provided)
+    let neighborSINRDelta = 0;
+    if (neighborSINRs && neighborSINRs.size > 0) {
+      const neighborIndices = graph.nodeIds
+        .map((id, idx) => ({ id, idx }))
+        .filter(({ id }) => neighborSINRs.has(id))
+        .map(({ idx }) => idx);
+
+      if (neighborIndices.length > 0) {
+        const baselineNeighborSINR =
+          neighborIndices.map(idx => pred.sinr[idx]).reduce((a, b) => a + b, 0) /
+          neighborIndices.length;
+        const actualNeighborSINR =
+          Array.from(neighborSINRs.values()).reduce((a, b) => a + b, 0) /
+          neighborSINRs.size;
+        neighborSINRDelta = actualNeighborSINR - baselineNeighborSINR;
+      }
+    }
+
+    // Calculate multi-objective reward using new function
+    const reward = this.calculateReward(
+      actualSINR,
+      predictedSINR,
+      iotIncrease,
+      neighborSINRDelta
+    );
+
+    // Calculate prediction error for loss
     const predictionError = Math.abs(predictedSINR - actualSINR);
-    const reward = actualSINR > 5 ? 1 : actualSINR > 0 ? 0.5 : -0.5;
 
     // Add to replay buffer
     this.replayBuffer.add({
@@ -1180,8 +1626,18 @@ export class SelfLearningUplinkGNN {
 
   /**
    * Train on a batch from the replay buffer
+   *
+   * Enhanced with:
+   * - Minimum sample threshold (don't train with too few samples)
+   * - Learning rate scheduling (decay every 500 updates)
    */
   trainOnBatch(batchSize: number): number {
+    // Minimum samples threshold - don't train with too few samples
+    const minSamplesForTraining = 50;
+    if (this.replayBuffer.size() < minSamplesForTraining) {
+      return 0; // Wait for more samples before training
+    }
+
     const { samples, weights, indices } = this.replayBuffer.sample(batchSize);
 
     if (samples.length === 0) {
@@ -1229,8 +1685,13 @@ export class SelfLearningUplinkGNN {
     this.state.avgReward = 0.9 * this.state.avgReward +
       0.1 * (samples.reduce((sum, s) => sum + s.reward, 0) / samples.length);
 
-    // Decay learning rate
-    this.state.learningRate = Math.max(1e-5, this.state.learningRate * 0.9999);
+    // Learning rate scheduling: decay every 500 updates
+    if (this.state.totalUpdates % 500 === 0 && this.state.totalUpdates > 0) {
+      this.state.learningRate = Math.max(1e-6, this.state.learningRate * 0.9);
+    }
+
+    // Also apply gradual decay
+    this.state.learningRate = Math.max(1e-6, this.state.learningRate * 0.9999);
 
     // Update target network periodically
     this.updateCounter++;
@@ -1316,6 +1777,63 @@ export class SelfLearningUplinkGNN {
           .fill(0)
           .map((_, j) => (i === j ? 1 : 0))
       );
+  }
+
+  /**
+   * Calculate multi-objective reward with explicit IoT penalty
+   *
+   * This improved reward function provides:
+   * - Continuous gradient (not binary) for better learning
+   * - Explicit interference penalty to discourage trading SINR for IoT
+   * - Neighbor impact consideration for network-wide optimization
+   * - Prediction accuracy bonus to improve model quality
+   */
+  private calculateReward(
+    actualSINR: number,
+    predictedSINR: number,
+    iotIncrease: number,
+    neighborSINRDelta: number
+  ): number {
+    let reward = 0;
+
+    // Primary: SINR quality (continuous gradient, not binary)
+    if (actualSINR > 10) {
+      reward += 1.0; // Excellent
+    } else if (actualSINR > 5) {
+      reward += 0.5 + (actualSINR - 5) * 0.1; // Good, gradient toward 10
+    } else if (actualSINR > 0) {
+      reward += 0.2 + actualSINR * 0.06; // Acceptable, gradient toward 5
+    } else {
+      reward += actualSINR * 0.1; // Penalty for negative SINR
+    }
+
+    // Interference penalty: penalize IoT increases
+    if (iotIncrease > 2.0) {
+      reward -= 0.4; // Significant IoT increase
+    } else if (iotIncrease > 1.0) {
+      reward -= 0.2; // Moderate IoT increase
+    } else if (iotIncrease < -0.5) {
+      reward += 0.15; // Bonus for reducing IoT
+    }
+
+    // Neighbor impact penalty
+    if (neighborSINRDelta < -1.5) {
+      reward -= 0.3; // Significant neighbor degradation
+    } else if (neighborSINRDelta < -0.5) {
+      reward -= 0.1; // Moderate neighbor degradation
+    } else if (neighborSINRDelta > 0.5) {
+      reward += 0.1; // Bonus for improving neighbors
+    }
+
+    // Prediction accuracy bonus (encourages model improvement)
+    const predictionError = Math.abs(predictedSINR - actualSINR);
+    if (predictionError < 1.0) {
+      reward += 0.1;
+    } else if (predictionError > 3.0) {
+      reward -= 0.1;
+    }
+
+    return Math.max(-1.0, Math.min(1.5, reward));
   }
 
   private getStatus(
@@ -1444,6 +1962,84 @@ export class EricssonUplinkOptimizer {
     const metrics = this.selfLearningGNN.getMetrics();
 
     return { timestamp, results, metrics, recommendations };
+  }
+
+  /**
+   * Optimize network using cluster-based multi-cell approach
+   *
+   * This method addresses the root cause of single-cell optimization limitations
+   * by grouping interfering cells into clusters and optimizing them jointly.
+   * Critical cells are prioritized with neighbor sacrifice strategies.
+   */
+async optimizeNetworkClustered(
+    cellSnapshots: Map<string, CellKPISnapshot>,
+    neighborRelations: NeighborRelation[]
+  ): Promise<{
+    timestamp: Date;
+    clusterResults: Array<{
+      clusterId: string;
+      cellResults: CellOptimizationResult[];
+      clusterSINRBefore: number;
+      clusterSINRAfter: number;
+      clusterImprovement: number;
+      networkImpact: number;
+      strategyUsed: string;
+    }>;
+    cellResults: CellOptimizationResult[];
+    metrics: LearningMetrics;
+    clusterMetrics: {
+      totalClusters: number;
+      criticalCellsInClusters: number;
+      avgClusterImprovement: number;
+      bestStrategy: string;
+    };
+    recommendations: string[];
+  }> {
+    // Import cluster optimizer dynamically to avoid circular dependencies
+    const { NetworkClusterOptimizer } = await import('./cluster-optimizer.js');
+
+    const clusterOptimizer = new NetworkClusterOptimizer(this.selfLearningGNN, this.config);
+    const result = clusterOptimizer.optimizeNetwork(cellSnapshots, neighborRelations);
+
+    // Find best performing strategy
+    const strategyCounts = new Map<string, { count: number; totalImprovement: number }>();
+    for (const cr of result.clusterResults) {
+      const existing = strategyCounts.get(cr.strategyUsed) || { count: 0, totalImprovement: 0 };
+      strategyCounts.set(cr.strategyUsed, {
+        count: existing.count + 1,
+        totalImprovement: existing.totalImprovement + cr.clusterImprovement,
+      });
+    }
+
+    let bestStrategy = 'none';
+    let bestAvgImprovement = -Infinity;
+    for (const [strategy, stats] of strategyCounts) {
+      const avgImprovement = stats.totalImprovement / stats.count;
+      if (avgImprovement > bestAvgImprovement) {
+        bestAvgImprovement = avgImprovement;
+        bestStrategy = strategy;
+      }
+    }
+
+    // Count critical cells in clusters
+    const criticalCellsInClusters = result.clusters.reduce(
+      (sum, c) => sum + c.criticalCellIds.length,
+      0
+    );
+
+    return {
+      timestamp: result.timestamp,
+      clusterResults: result.clusterResults,
+      cellResults: result.cellResults,
+      metrics: this.selfLearningGNN.getMetrics(),
+      clusterMetrics: {
+        totalClusters: result.clusters.length,
+        criticalCellsInClusters,
+        avgClusterImprovement: result.metrics.avgClusterImprovement,
+        bestStrategy,
+      },
+      recommendations: result.recommendations,
+    };
   }
 
   /**
@@ -1666,6 +2262,7 @@ export default {
   RuVectorGNNLayer,
   ExperienceReplayBuffer,
   DifferentiableParameterSearch,
+  InterferenceAwareCandidateGenerator,
   SelfLearningUplinkGNN,
   EricssonUplinkOptimizer,
 
