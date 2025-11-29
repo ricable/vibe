@@ -65,7 +65,7 @@ async function main() {
     sinrRecommendations: result.gnnInsights.sinrRecommendations.length,
     powerControlChanges: result.powerControlRecommendations
       ? Array.from(result.powerControlRecommendations.values()).filter(
-          r => r.recommendedP0 !== r.currentP0 || r.recommendedAlpha !== r.currentAlpha
+          r => r.optimizedParams.p0 !== r.originalParams.p0 || r.optimizedParams.alpha !== r.originalParams.alpha
         ).length
       : 0,
   }, null, 2));

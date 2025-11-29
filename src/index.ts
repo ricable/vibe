@@ -20,11 +20,8 @@ export { default as anomalyDetection } from './analysis/anomaly-detection.js';
 export { default as classification } from './analysis/classifier.js';
 export { default as rootCauseAnalysis } from './analysis/root-cause.js';
 
-// GNN modules
-export { default as cellGraph } from './gnn/cell-graph.js';
-export { default as uplinkPowerControl } from './gnn/uplink-power-control.js';
-export { default as interferenceOptimizer } from './gnn/interference-optimizer.js';
-export { default as networkSurrogateModel } from './gnn/network-surrogate-model.js';
+// GNN module (RuVector-based unified architecture)
+export * from './gnn/index.js';
 
 // Agent orchestration
 export { default as orchestrator } from './agents/orchestrator.js';
@@ -57,52 +54,6 @@ export {
   RootCauseAnalyzer,
   MultiCellCorrelationAnalyzer,
 } from './analysis/root-cause.js';
-
-export {
-  CellGraphBuilder,
-  GNNLayer,
-  CellGNN,
-  SINRNeighborAnalyzer,
-} from './gnn/cell-graph.js';
-
-export {
-  PathLossAnalyzer,
-  FractionalPathLossOptimizer,
-  GNNPowerControlOptimizer,
-  PowerControlValidator,
-} from './gnn/uplink-power-control.js';
-
-export {
-  SINRPredictionGNN,
-  IssueCellDetector,
-  GeneticOptimizer,
-  InterferenceOptimizationLoop,
-  DEFAULT_OPTIMIZER_CONFIG,
-} from './gnn/interference-optimizer.js';
-export type {
-  InterferenceOptimizerConfig,
-  IssueCell,
-  NetworkOptimizationResult,
-} from './gnn/interference-optimizer.js';
-
-// Network Surrogate Model (Digital Twin)
-export {
-  SurrogateGraphBuilder,
-  GNNSurrogateModel,
-  IssueCellDetector as SurrogateIssueCellDetector,
-  SurrogateOptimizer,
-  SurrogateVisualizer,
-  DEFAULT_SURROGATE_CONFIG,
-} from './gnn/network-surrogate-model.js';
-export type {
-  SurrogateModelConfig,
-  PowerControlParams,
-  CellStatus,
-  CellOptimizationResult,
-  NetworkOptimizationResult as SurrogateNetworkOptimizationResult,
-  TrainingSample,
-  SurrogateGraph,
-} from './gnn/network-surrogate-model.js';
 
 export {
   RANAnalysisOrchestrator,

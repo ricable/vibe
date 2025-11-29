@@ -13,8 +13,14 @@ import type {
 import { UnifiedAnomalyDetector } from '../analysis/anomaly-detection.js';
 import { CellHealthClassifier, AnomalyClassifier, IssuePatternClassifier } from '../analysis/classifier.js';
 import { RootCauseAnalyzer } from '../analysis/root-cause.js';
-import { CellGraphBuilder, CellGNN, SINRNeighborAnalyzer } from '../gnn/cell-graph.js';
-import { GNNPowerControlOptimizer, PowerControlValidator, type PowerControlOptimizationResult } from '../gnn/uplink-power-control.js';
+import {
+  SurrogateGraphBuilder,
+  SelfLearningUplinkGNN,
+  EricssonUplinkOptimizer,
+  SINRNeighborAnalyzer,
+  PowerControlValidator,
+  type CellOptimizationResult,
+} from '../gnn/index.js';
 
 // ============================================================================
 // AGENT TYPES
@@ -57,7 +63,7 @@ export interface AnalysisResult {
   anomalies: DetectedAnomaly[];
   cellHealthStatus: Map<string, ReturnType<CellHealthClassifier['classifyCell']>>;
   rootCauseAnalysis?: RootCauseAnalysis;
-  powerControlRecommendations?: Map<string, PowerControlOptimizationResult>;
+  powerControlRecommendations?: Map<string, CellOptimizationResult>;
   gnnInsights: {
     anomalousCells: string[];
     sinrRecommendations: Array<{
@@ -175,13 +181,13 @@ class RootCauseAgent {
 }
 
 class GNNAnalyzerAgent {
-  private graphBuilder: CellGraphBuilder;
-  private gnn: CellGNN;
+  private graphBuilder: SurrogateGraphBuilder;
+  private gnn: SelfLearningUplinkGNN;
   private sinrAnalyzer: SINRNeighborAnalyzer;
 
   constructor() {
-    this.graphBuilder = new CellGraphBuilder();
-    this.gnn = new CellGNN();
+    this.graphBuilder = new SurrogateGraphBuilder();
+    this.gnn = new SelfLearningUplinkGNN();
     this.sinrAnalyzer = new SINRNeighborAnalyzer();
   }
 
@@ -199,8 +205,16 @@ class GNNAnalyzerAgent {
   }> {
     const graph = this.graphBuilder.buildGraph(cellSnapshots, neighborRelations);
 
-    // Get GNN-based anomaly detection
-    const anomalousCells = this.gnn.detectAnomalousCells(graph);
+    // Get GNN predictions and detect anomalous cells
+    const predictions = this.gnn.predict(graph);
+    const anomalousCells: string[] = [];
+
+    // Detect cells with very low SINR as anomalous
+    for (let i = 0; i < graph.nodeIds.length; i++) {
+      if (predictions.sinr[i] < 0) {
+        anomalousCells.push(graph.nodeIds[i]);
+      }
+    }
 
     // Get SINR-based recommendations
     const sinrAnalysis = this.sinrAnalyzer.analyzeSINRRelationships(graph);
@@ -210,8 +224,11 @@ class GNNAnalyzerAgent {
       recommendation: r.recommendation,
     }));
 
-    // Get embeddings for downstream use
-    const embeddings = this.gnn.getEmbeddings(graph);
+    // Get embeddings from predictions
+    const embeddings = new Map<string, number[]>();
+    for (let i = 0; i < graph.nodeIds.length; i++) {
+      embeddings.set(graph.nodeIds[i], predictions.embeddings[i]);
+    }
 
     return {
       anomalousCells,
@@ -222,42 +239,39 @@ class GNNAnalyzerAgent {
 }
 
 class PowerOptimizerAgent {
-  private optimizer: GNNPowerControlOptimizer;
+  private optimizer: EricssonUplinkOptimizer;
   private validator: PowerControlValidator;
 
   constructor() {
-    this.optimizer = new GNNPowerControlOptimizer();
+    this.optimizer = new EricssonUplinkOptimizer();
     this.validator = new PowerControlValidator();
   }
 
   async execute(
     cellSnapshots: Map<string, CellKPISnapshot>,
     neighborRelations: NeighborRelation[]
-  ): Promise<Map<string, PowerControlOptimizationResult>> {
-    const recommendations = this.optimizer.optimizeNetworkPowerControl(
-      cellSnapshots,
-      neighborRelations
-    );
+  ): Promise<Map<string, CellOptimizationResult>> {
+    // Run network optimization
+    const result = this.optimizer.optimizeNetwork(cellSnapshots, neighborRelations);
 
-    // Validate all recommendations
-    for (const [cellId, recommendation] of recommendations) {
-      const snapshot = cellSnapshots.get(cellId);
+    // Convert results to Map
+    const recommendations = new Map<string, CellOptimizationResult>();
+    for (const cellResult of result.results) {
+      const snapshot = cellSnapshots.get(cellResult.cellId);
       if (snapshot) {
+        // Validate the optimization
         const validation = this.validator.validateChanges(
-          { p0: recommendation.currentP0, alpha: recommendation.currentAlpha },
-          { p0: recommendation.recommendedP0, alpha: recommendation.recommendedAlpha },
+          cellResult.originalParams,
+          cellResult.optimizedParams,
           snapshot
         );
 
-        if (validation.warnings.length > 0) {
-          recommendation.rationale += ` Warnings: ${validation.warnings.join('; ')}`;
-        }
-
+        // Reduce confidence for risky changes
         if (!validation.isValid) {
-          recommendation.confidence *= 0.5; // Reduce confidence for risky changes
-          recommendation.rationale += ` Risks: ${validation.risks.join('; ')}`;
+          cellResult.confidence *= 0.5;
         }
       }
+      recommendations.set(cellResult.cellId, cellResult);
     }
 
     return recommendations;
@@ -450,13 +464,13 @@ export class AnalysisReportGenerator {
       // Only show cells with recommendations different from current
       let shown = 0;
       for (const [cellId, rec] of result.powerControlRecommendations) {
-        if (rec.recommendedP0 !== rec.currentP0 || rec.recommendedAlpha !== rec.currentAlpha) {
+        if (rec.optimizedParams.p0 !== rec.originalParams.p0 || rec.optimizedParams.alpha !== rec.originalParams.alpha) {
           if (shown < 10) {
             lines.push(`\n${cellId}:`);
-            lines.push(`  P0: ${rec.currentP0} dBm -> ${rec.recommendedP0} dBm`);
-            lines.push(`  Alpha: ${rec.currentAlpha} -> ${rec.recommendedAlpha}`);
+            lines.push(`  P0: ${rec.originalParams.p0} dBm -> ${rec.optimizedParams.p0} dBm`);
+            lines.push(`  Alpha: ${rec.originalParams.alpha} -> ${rec.optimizedParams.alpha}`);
+            lines.push(`  SINR Improvement: +${rec.sinrImprovement.toFixed(1)} dB`);
             lines.push(`  Confidence: ${(rec.confidence * 100).toFixed(0)}%`);
-            lines.push(`  Rationale: ${rec.rationale}`);
             shown++;
           }
         }
