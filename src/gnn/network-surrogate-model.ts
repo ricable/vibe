@@ -82,11 +82,11 @@ export const DEFAULT_SURROGATE_CONFIG: SurrogateModelConfig = {
   numHeads: 4,
 
   p0Range: {
-    min: -110,
-    max: -85,
-    step: 1,
+    min: -104,
+    max: -78,
+    step: 2,  // 2 dB steps for faster optimization
   },
-  alphaValues: [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+  alphaValues: [0.6, 0.7, 0.8, 0.9, 1.0],  // Reduced from 7 to 5 values for faster optimization
 
   thresholds: {
     sinrLow: 5,
