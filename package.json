@@ -14,8 +14,10 @@
     "agents:start": "tsx src/agents/orchestrator.ts"
   },
   "dependencies": {
+    "@ruvector/core": "^0.1.15",
     "@tensorflow/tfjs-node": "^4.20.0",
     "agentic-flow": "^1.10.2",
+    "better-sqlite3": "^12.5.0",
     "claude-flow": "^2.7.31",
     "date-fns": "^3.6.0",
     "pino": "^9.0.0",
