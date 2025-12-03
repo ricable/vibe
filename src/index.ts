@@ -131,16 +131,47 @@ export async function analyzeNetwork(options: {
   });
 }
 
+// LLM Router exports
+export {
+  SelfLearningLLMRouter,
+  AgentDBAdapter,
+  MultiModelRouter,
+  createRouter,
+  VERSION as LLM_ROUTER_VERSION,
+  FEATURES as LLM_ROUTER_FEATURES,
+} from './llm-router/index.js';
+
+export {
+  SONAAdapter,
+  MicroLoRAAdapter,
+  BaseLoRAAdapter,
+  EWCConsolidation,
+  ReasoningBank,
+  DualLearningLoop,
+} from './llm-router/sona-adapter.js';
+
+export {
+  TemporalAnalyzer,
+  DTWAnalyzer,
+  LCSAnalyzer,
+  StreamingAnalyzer,
+  TemporalForecaster,
+} from './llm-router/temporal-analyzer.js';
+
 // CLI entry point
 if (import.meta.url === `file://${process.argv[1]}`) {
-  console.log('RAN Network Analysis System v1.0.0');
+  console.log('RAN Network Analysis System v2.0.0');
+  console.log('With Self-Learning LLM Router');
   console.log('');
   console.log('Usage:');
-  console.log('  npm run dev           - Run development server');
-  console.log('  npm run analyze       - Run analysis on sample data');
-  console.log('  npm run gnn:train     - Train GNN model');
-  console.log('  npm run agents:start  - Start agent orchestrator');
+  console.log('  npm run dev             - Run development server');
+  console.log('  npm run analyze         - Run analysis on sample data');
+  console.log('  npm run gnn:train       - Train GNN model');
+  console.log('  npm run agents:start    - Start agent orchestrator');
+  console.log('  npm run router:demo     - Run LLM router demo');
+  console.log('  npm run router:stream   - Run streaming analysis demo');
+  console.log('  npm run temporal:analyze - Run temporal analysis demo');
   console.log('');
   console.log('For programmatic use:');
-  console.log('  import { analyzeNetwork } from "ran-network-analysis"');
+  console.log('  import { analyzeNetwork, createRouter } from "ran-network-analysis"');
 }

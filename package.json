@@ -1,7 +1,7 @@
 {
   "name": "ran-network-analysis",
-  "version": "1.0.0",
-  "description": "AI/ML Radio Access Network counters and KPIs time series analysis with GNN-based anomaly detection and root cause analysis",
+  "version": "2.0.0",
+  "description": "AI/ML Radio Access Network with Self-Learning LLM Router, Temporal Analysis, and GNN-based optimization",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -11,14 +11,22 @@
     "test": "vitest",
     "analyze": "tsx src/analysis/run-analysis.ts",
     "gnn:train": "tsx src/gnn/train.ts",
-    "agents:start": "tsx src/agents/orchestrator.ts"
+    "agents:start": "tsx src/agents/orchestrator.ts",
+    "router:demo": "tsx src/llm-router/run-demo.ts",
+    "router:stream": "tsx src/llm-router/stream-demo.ts",
+    "temporal:analyze": "tsx src/llm-router/temporal-demo.ts"
   },
   "dependencies": {
+    "@ruvector/sona": "^0.1.0",
     "@tensorflow/tfjs-node": "^4.20.0",
+    "agentdb": "^0.3.0",
     "agentic-flow": "^1.10.2",
     "claude-flow": "^2.7.31",
     "date-fns": "^3.6.0",
+    "midstreamer": "^0.2.0",
+    "neurodivergent": "^0.1.0",
     "pino": "^9.0.0",
+    "ruv-swarm": "^0.5.0",
     "ruvector": "^0.1.24",
     "simple-statistics": "^7.8.5",
     "uuid": "^9.0.1",
@@ -41,6 +49,12 @@
     "gnn",
     "graph-neural-network",
     "uplink-power-control",
-    "radio-network"
+    "radio-network",
+    "llm-router",
+    "sona",
+    "temporal-analysis",
+    "self-learning",
+    "reasoning-bank",
+    "multi-model"
   ]
 }
